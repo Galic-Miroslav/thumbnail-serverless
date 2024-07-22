@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Image Upload</title>
+</head>
+<body>
+    <h1>Upload Image</h1>
+    <input type="file" id="fileInput">
+    <button onclick="uploadImage()">Upload</button>
+
+    <script>
+        async function uploadImage() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onloadend = async () => {
+                const base64Image = reader.result.split(',')[1];
+                const response = await fetch('PUT_YOUR_API_GATEWAY_ENDPOINT', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64Image })
+                });
+                const data = await response.json();
+                console.log(data);
+            };
+
+            reader.readAsDataURL(file);
+        }
+    </script>
+</body>
+</html>

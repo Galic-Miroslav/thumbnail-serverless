@@ -1,0 +1,272 @@
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  API:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub
+        - ${ResourceName} From Stack ${AWS::StackName}
+        - ResourceName: API
+      StageName: Prod
+      DefinitionBody:
+        openapi: '3.0'
+        info: {}
+        paths:
+          /thumbnail/process-photo:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadPhoto.Arn}/invocations
+              responses: {}
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+      Cors:
+        MaxAge: 5
+        AllowOrigin: '''*'''
+        AllowHeaders: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'''
+        AllowMethods: '''POST'''
+  UploadPhoto:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: UploadPhoto
+      CodeUri: src/UploadPhoto
+      Handler: index.handler
+      Runtime: nodejs20.x
+      MemorySize: 256
+      Timeout: 30
+      Tracing: Active
+      Events:
+        APIPOSTthumbnailprocessphoto:
+          Type: Api
+          Properties:
+            Path: /thumbnail/process-photo
+            Method: POST
+            RestApiId: !Ref API
+      Environment:
+        Variables:
+          PHOTOMETADATA_TABLE_NAME: !Ref PhotoMetadata
+          PHOTOMETADATA_TABLE_ARN: !GetAtt PhotoMetadata.Arn
+          ORIGINALPHOTOBUCKET_BUCKET_NAME: !Ref originalphotobucket
+          ORIGINALPHOTOBUCKET_BUCKET_ARN: !GetAtt originalphotobucket.Arn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectAcl
+                - s3:GetObjectLegalHold
+                - s3:GetObjectRetention
+                - s3:GetObjectTorrent
+                - s3:GetObjectVersion
+                - s3:GetObjectVersionAcl
+                - s3:GetObjectVersionForReplication
+                - s3:GetObjectVersionTorrent
+                - s3:ListBucket
+                - s3:ListBucketMultipartUploads
+                - s3:ListBucketVersions
+                - s3:ListMultipartUploadParts
+                - s3:AbortMultipartUpload
+                - s3:DeleteObject
+                - s3:DeleteObjectVersion
+                - s3:PutObject
+                - s3:PutObjectLegalHold
+                - s3:PutObjectRetention
+                - s3:RestoreObject
+              Resource:
+                - !Sub arn:${AWS::Partition}:s3:::${originalphotobucket}
+                - !Sub arn:${AWS::Partition}:s3:::${originalphotobucket}/*
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotoMetadata
+  UploadPhotoLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${UploadPhoto}
+  PhotoMetadata:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: PhotoId
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: PhotoId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+  originalphotobucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub photo-thumbnail-originalp-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: alias/aws/s3
+      PublicAccessBlockConfiguration:
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref PhotoTopic
+          - Event: s3:ObjectRemoved:*
+            Topic: !Ref PhotoTopic
+    DependsOn:
+      - originalphotobucketToPhotoTopicPermission
+  originalphotobucketBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref originalphotobucket
+      PolicyDocument:
+        Id: RequireEncryptionInTransit
+        Version: '2012-10-17'
+        Statement:
+          - Principal: '*'
+            Action: '*'
+            Effect: Deny
+            Resource:
+              - !GetAtt originalphotobucket.Arn
+              - !Sub ${originalphotobucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+  PhotoTopic:
+    Type: AWS::SNS::Topic
+  originalphotobucketToPhotoTopicPermission:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref PhotoTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:s3:::photo-thumbnail-originalp-${AWS::AccountId}
+      Topics:
+        - !Ref PhotoTopic
+  ProcessPhoto:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: ProcessPhoto
+      CodeUri: src/ProcessPhoto
+      Handler: index.handler
+      Runtime: nodejs20.x
+      MemorySize: 512
+      Timeout: 30
+      Tracing: Active
+      Events:
+        PhotoTopic:
+          Type: SNS
+          Properties:
+            Topic: !Ref PhotoTopic
+            Region: !Select
+              - 3
+              - !Split
+                - ':'
+                - !Ref PhotoTopic
+      Environment:
+        Variables:
+          THUMBNAILBUCKET_BUCKET_NAME: !Ref thumbnailbucket
+          THUMBNAILBUCKET_BUCKET_ARN: !GetAtt thumbnailbucket.Arn
+          PHOTOMETADATA_TABLE_NAME: !Ref PhotoMetadata
+          PHOTOMETADATA_TABLE_ARN: !GetAtt PhotoMetadata.Arn
+          ORIGINALPHOTOBUCKET_BUCKET_NAME: !Ref originalphotobucket
+          ORIGINALPHOTOBUCKET_BUCKET_ARN: !GetAtt originalphotobucket.Arn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectAcl
+                - s3:GetObjectLegalHold
+                - s3:GetObjectRetention
+                - s3:GetObjectTorrent
+                - s3:GetObjectVersion
+                - s3:GetObjectVersionAcl
+                - s3:GetObjectVersionForReplication
+                - s3:GetObjectVersionTorrent
+                - s3:ListBucket
+                - s3:ListBucketMultipartUploads
+                - s3:ListBucketVersions
+                - s3:ListMultipartUploadParts
+                - s3:AbortMultipartUpload
+                - s3:DeleteObject
+                - s3:DeleteObjectVersion
+                - s3:PutObject
+                - s3:PutObjectLegalHold
+                - s3:PutObjectRetention
+                - s3:RestoreObject
+              Resource:
+                - !Sub arn:${AWS::Partition}:s3:::${thumbnailbucket}
+                - !Sub arn:${AWS::Partition}:s3:::${thumbnailbucket}/*
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotoMetadata
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectAcl
+                - s3:GetObjectLegalHold
+                - s3:GetObjectRetention
+                - s3:GetObjectTorrent
+                - s3:GetObjectVersion
+                - s3:GetObjectVersionAcl
+                - s3:GetObjectVersionForReplication
+                - s3:GetObjectVersionTorrent
+                - s3:ListBucket
+                - s3:ListBucketMultipartUploads
+                - s3:ListBucketVersions
+                - s3:ListMultipartUploadParts
+                - s3:AbortMultipartUpload
+                - s3:DeleteObject
+                - s3:DeleteObjectVersion
+                - s3:PutObject
+                - s3:PutObjectLegalHold
+                - s3:PutObjectRetention
+                - s3:RestoreObject
+              Resource:
+                - !Sub arn:${AWS::Partition}:s3:::${originalphotobucket}
+                - !Sub arn:${AWS::Partition}:s3:::${originalphotobucket}/*
+  ProcessPhotoLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ProcessPhoto}
+  thumbnailbucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub thumbnail-photo-thumbnail-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: alias/aws/s3
+      PublicAccessBlockConfiguration:
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  thumbnailbucketBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref thumbnailbucket
+      PolicyDocument:
+        Id: RequireEncryptionInTransit
+        Version: '2012-10-17'
+        Statement:
+          - Principal: '*'
+            Action: '*'
+            Effect: Deny
+            Resource:
+              - !GetAtt thumbnailbucket.Arn
+              - !Sub ${thumbnailbucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'

@@ -1,0 +1,6 @@
+.aws-sam
+.aws-composer
+
+samconfig.toml
+
+/src/*/node_modules
